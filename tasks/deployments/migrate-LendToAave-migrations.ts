@@ -1,51 +1,62 @@
-import { task } from "@nomiclabs/buidler/config";
-import BigNumber from "bignumber.js";
+import { task } from "hardhat/config";
+import { parseUnits } from "ethers";
 import {
   getLendToAaveMigrator,
   getLendToken,
   getEthersSigners,
 } from "../../helpers/contracts-helpers";
 
-task(`Lend-Migration`, `Create migration to test the contracts`).setAction(
-  async (_, localBRE) => {
-    console.log(`\n- Lend Migration started`);
-    await localBRE.run("set-bre");
-
-    if (!localBRE.network.config.chainId) {
+task("lend-migration", "Create migration to test the contracts")
+  .setAction(async (_, hre) => {
+    console.log("\n- Lend Migration started");
+    
+    // Hardhat Runtime Environment (HRE) initialization is automatic, 
+    // but we can explicitly access it via 'hre' if needed.
+    
+    if (!hre.network.config.chainId) {
       throw new Error("INVALID_CHAIN_ID");
     }
 
-    const [, , user1, user2] = await getEthersSigners();
+    // 1. Setup Accounts
+    const signers = await getEthersSigners();
+    const user1 = signers[2]; // Keeping original index logic
+    const user2 = signers[3];
 
+    // 2. Get Contracts
     const mockLend = await getLendToken();
     const lendToAaveMigrator = await getLendToAaveMigrator();
+    const migratorAddress = await lendToAaveMigrator.getAddress(); // Ethers v6 syntax
 
-    const lendAmount = 1000;
-    const lendTokenAmount = new BigNumber(lendAmount)
-      .times(new BigNumber(10).pow(18))
-      .toFixed(0);
-    const halfLendTokenAmount = new BigNumber(lendAmount / 2)
-      .times(new BigNumber(10).pow(18))
-      .toFixed(0);
+    // 3. Calculate Amounts (Using native Ethers BigInt)
+    // 1000 LEND (18 decimals)
+    const lendAmountRaw = "1000";
+    const lendTokenAmount = parseUnits(lendAmountRaw, 18);
+    
+    // 500 LEND
+    const halfLendAmountRaw = "500"; 
+    const halfLendTokenAmount = parseUnits(halfLendAmountRaw, 18);
 
-    await mockLend.connect(user1).mint(lendTokenAmount);
-    await mockLend.connect(user2).mint(lendTokenAmount);
+    console.log(`  - Minting ${lendAmountRaw} LEND to users...`);
 
-    await mockLend
-      .connect(user1)
-      .approve(lendToAaveMigrator.address, lendTokenAmount);
-    await mockLend
-      .connect(user2)
-      .approve(lendToAaveMigrator.address, lendTokenAmount);
+    // 4. Mint Tokens (Setup State)
+    await (await mockLend.connect(user1).mint(lendTokenAmount)).wait();
+    await (await mockLend.connect(user2).mint(lendTokenAmount)).wait();
 
-    await lendToAaveMigrator
-      .connect(user1)
-      .migrateFromLEND(halfLendTokenAmount);
-    await lendToAaveMigrator
-      .connect(user1)
-      .migrateFromLEND(halfLendTokenAmount);
-    await lendToAaveMigrator.connect(user2).migrateFromLEND(lendTokenAmount);
+    console.log(`  - Approving Migrator...`);
 
-    console.log(`\n- Finished migrating lend balances`);
-  }
-);
+    // 5. Approve Migrator
+    await (await mockLend.connect(user1).approve(migratorAddress, lendTokenAmount)).wait();
+    await (await mockLend.connect(user2).approve(migratorAddress, lendTokenAmount)).wait();
+
+    console.log(`  - Executing Migrations...`);
+
+    // 6. Execute Migration
+    // User 1 migrates in two batches
+    await (await lendToAaveMigrator.connect(user1).migrateFromLEND(halfLendTokenAmount)).wait();
+    await (await lendToAaveMigrator.connect(user1).migrateFromLEND(halfLendTokenAmount)).wait();
+    
+    // User 2 migrates all at once
+    await (await lendToAaveMigrator.connect(user2).migrateFromLEND(lendTokenAmount)).wait();
+
+    console.log(`\n- Finished migrating LEND balances successfully.`);
+  });
